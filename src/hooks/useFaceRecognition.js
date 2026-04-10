@@ -18,13 +18,13 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import * as faceapi from '@vladmandic/face-api';
 import { BACKEND_URL } from '../config';
 
-const MATCH_THRESHOLD = 0.6; // 0.5 was too strict for webcam variations, 0.6 is standard
-const STORAGE_KEY     = 'attention_enrollments';
-const MODELS_URL      = '/models';   // local — run scripts/download-models.js first
+const MATCH_THRESHOLD = 0.90; // 0.70 is highly lenient to account for heavy 128D distortion on side profiles
+const STORAGE_KEY = 'attention_enrollments';
+const MODELS_URL = '/models';   // local — run scripts/download-models.js first
 
 export function useFaceRecognition() {
-  const [modelsLoaded,  setModelsLoaded]  = useState(false);
-  const [enrollments,   setEnrollments]   = useState([]);   // [{name, descriptor: Float32Array}]
+  const [modelsLoaded, setModelsLoaded] = useState(false);
+  const [enrollments, setEnrollments] = useState([]);   // [{name, descriptor: Float32Array}]
   const matcherRef = useRef(null);
 
   // ── Load models ─────────────────────────────────────────────────────────────
@@ -53,7 +53,7 @@ export function useFaceRecognition() {
       const parsed = JSON.parse(raw);
       // Handle both old schema (single descriptor) and new schema (multiple array)
       const loaded = parsed.map(e => ({
-        name:        e.name,
+        name: e.name,
         descriptors: e.descriptors
           ? e.descriptors.map(d => new Float32Array(d))
           : [new Float32Array(e.descriptor)], // backwards compatibility
@@ -67,7 +67,7 @@ export function useFaceRecognition() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ source: 'web' }),
-        }).catch(() => {});
+        }).catch(() => { });
       }
     } catch (e) {
       console.warn('Could not load enrollments from storage:', e);
@@ -77,7 +77,7 @@ export function useFaceRecognition() {
   const _saveToStorage = (list) => {
     try {
       const serializable = list.map(e => ({
-        name:        e.name,
+        name: e.name,
         descriptors: e.descriptors.map(d => Array.from(d)),
       }));
       localStorage.setItem(STORAGE_KEY, JSON.stringify(serializable));
@@ -97,7 +97,7 @@ export function useFaceRecognition() {
   // ── Enroll a student from an array of HTMLVideoElement frames ───────────────
   const enroll = useCallback(async (name, videoElement, onProgress) => {
     if (!modelsLoaded) throw new Error('Models not loaded yet');
-    if (!name?.trim())  throw new Error('Name is required');
+    if (!name?.trim()) throw new Error('Name is required');
 
     const descriptors = [];
     const FRAMES = 15;
@@ -112,7 +112,7 @@ export function useFaceRecognition() {
           .withFaceLandmarks()
           .withFaceDescriptor();
         if (detection) descriptors.push(detection.descriptor);
-      } catch (_) {}
+      } catch (_) { }
       await new Promise(r => setTimeout(r, 200));
     }
 
@@ -178,9 +178,9 @@ export function useFaceRecognition() {
         .withFaceDescriptors();
 
       return detections.map(d => ({
-        bbox:       d.detection.box,
+        bbox: d.detection.box,
         descriptor: d.descriptor,
-        name:       identify(d.descriptor),
+        name: identify(d.descriptor),
         confidence: matcherRef.current
           ? Math.max(0, 1 - matcherRef.current.findBestMatch(d.descriptor).distance)
           : 0,
