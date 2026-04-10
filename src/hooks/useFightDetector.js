@@ -1,40 +1,32 @@
 /**
- * Fight / aggression detection — v3 (strict, multi-person only).
+ * Fight / aggression detection — v4 (high-confidence, multi-person only).
  *
- * ONLY triggers when 2+ people are detected AND one is approaching
- * the other aggressively. Single-person actions are never flagged.
+ * STRICT rules to avoid false positives:
+ *   1. 2+ faces MUST be visible (non-negotiable)
+ *   2. Faces must be close together AND approaching each other
+ *   3. At least one strong aggression signal (arm swinging fast, body lunge)
+ *   4. Must sustain for 6+ CONSECUTIVE aggressive frames (~1.2 seconds)
+ *   5. Counter fully resets on any non-aggressive frame (no buildup over time)
  *
- * Detection logic:
- *   1. REQUIREMENT: 2+ faces must be visible (non-negotiable).
- *   2. Faces must be close together OR actively closing distance.
- *   3. At least one aggressive body signal:
- *      - Rapid wrist/arm movement (hitting/swinging)
- *      - Arm raised or extended toward the other person
- *      - Rapid body lunging (shoulder center moving fast)
- *
- * Anti-false-positive:
- *   - Needs CONFIRM_FRAMES consecutive aggressive frames before alert
- *   - "Closing distance" is tracked across frames to detect approach
- *   - Normal gestures (waving, stretching) won't trigger because they
- *     lack the proximity + approach component
- *
- * Sticky display: once triggered, stays true for DISPLAY_MS.
+ * This means: two people simply sitting close, normal gestures, waving,
+ * or brief arm movements will NEVER trigger a fight alert.
  */
 
-const FIGHT_CONFIRM_FRAMES  = 3;     // need 3 consecutive aggressive frames
-const PROXIMITY_THRESHOLD   = 0.40;  // faces within 40% of frame width = "close"
-const APPROACH_THRESHOLD    = 0.008; // faces got 0.8% closer per frame = "approaching"
-const DISPLAY_MS            = 6000;  // show alert for 6 seconds
+const FIGHT_CONFIRM_FRAMES  = 6;     // need 6 consecutive frames (~1.2s at 200ms interval)
+const PROXIMITY_THRESHOLD   = 0.32;  // faces must be within 32% of frame (genuinely close)
+const APPROACH_THRESHOLD    = 0.012; // faces must close 1.2% per frame (fast approach)
+const DISPLAY_MS            = 5000;  // show alert for 5 seconds
 
-const WRIST_VELOCITY_THRESH = 0.045; // wrist moved >4.5% per frame = swinging
-const BODY_LUNGE_THRESH     = 0.018; // shoulder center moved >1.8% per frame
+const WRIST_VELOCITY_THRESH = 0.06;  // wrist must move >6% per frame (strong swing)
+const ARM_EXTEND_THRESH     = 0.22;  // wrist >22% away from shoulder (full punch extend)
+const ARM_RAISE_THRESH      = 0.07;  // wrist must be >7% above shoulder (clear raise)
+const BODY_LUNGE_THRESH     = 0.025; // shoulder center moved >2.5% per frame (clear charge)
 
 export class FightDetector {
   constructor() {
-    this.prevFaceCenters = null;  // [{x, y, size}]
-    this.prevMinDist     = null;  // closest face-pair distance last frame
-    this.prevBodyCenter  = null;  // {x, y}
-    this.prevWrists      = null;  // {lx, ly, rx, ry}
+    this.prevMinDist     = null;
+    this.prevBodyCenter  = null;
+    this.prevWrists      = null;
     this.counter         = 0;
     this.lastTrigger     = 0;
   }
@@ -47,29 +39,24 @@ export class FightDetector {
     // HARD REQUIREMENT: 2+ faces must be visible
     // ═══════════════════════════════════════════════════════════════════════════
     if (faceLandmarkArrays.length < 2) {
-      // Single person — never flag, reset approach tracking
-      this.prevFaceCenters = null;
-      this.prevMinDist     = null;
-      this.counter = Math.max(0, this.counter - 1);
+      this.prevMinDist = null;
+      this.counter     = 0;  // full reset — single person breaks the chain
 
       const fighting = now - this.lastTrigger < DISPLAY_MS;
       return {
         fight:   fighting,
         signals: fighting ? ['sticky'] : [],
-        reason:  fighting
-          ? 'FIGHT (alert active)'
-          : 'monitoring (need 2+ people)',
+        reason:  fighting ? 'FIGHT (alert active)' : 'monitoring (need 2+ people)',
       };
     }
 
-    // ── Compute face centers and pairwise distances ──────────────────────────
+    // ── Compute closest face-pair distance ───────────────────────────────────
     const centers = faceLandmarkArrays.map(lms => {
       let sx = 0, sy = 0;
       for (const l of lms) { sx += l.x; sy += l.y; }
       return { x: sx / lms.length, y: sy / lms.length };
     });
 
-    // Find the closest pair of faces
     let minDist = Infinity;
     for (let i = 0; i < centers.length; i++) {
       for (let j = i + 1; j < centers.length; j++) {
@@ -78,61 +65,55 @@ export class FightDetector {
       }
     }
 
-    // ── Signal 1: Faces are already close ───────────────────────────────────
+    // ── Proximity: faces genuinely close ─────────────────────────────────────
     const facesClose = minDist < PROXIMITY_THRESHOLD;
     if (facesClose) signals.push(`close d=${minDist.toFixed(2)}`);
 
-    // ── Signal 2: Faces are approaching (distance shrinking) ────────────────
+    // ── Approach: distance shrinking frame-over-frame ────────────────────────
     let approaching = false;
     if (this.prevMinDist !== null) {
-      const distDelta = this.prevMinDist - minDist; // positive = getting closer
-      if (distDelta > APPROACH_THRESHOLD) {
+      const delta = this.prevMinDist - minDist;
+      if (delta > APPROACH_THRESHOLD) {
         approaching = true;
-        signals.push(`approach Δ=${distDelta.toFixed(3)}`);
+        signals.push(`approach Δ=${delta.toFixed(3)}`);
       }
     }
     this.prevMinDist = minDist;
-    this.prevFaceCenters = centers;
-
-    // ── Signal 3: Rapid face movement (any face jittering fast) ─────────────
-    // Not used for decision alone, but amplifies other signals
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // Pose-based aggression signals (from the single detected skeleton)
+    // Pose-based aggression (strong thresholds only)
     // ═══════════════════════════════════════════════════════════════════════════
-    let armRaised     = false;
-    let armExtended   = false;
-    let armSwinging   = false;
-    let bodyLunging   = false;
+    let armSwinging = false;
+    let armRaised   = false;
+    let armExtended = false;
+    let bodyLunging = false;
 
     if (poseLandmarks) {
-      const lW = poseLandmarks[15]; // left wrist
-      const rW = poseLandmarks[16]; // right wrist
-      const lS = poseLandmarks[11]; // left shoulder
-      const rS = poseLandmarks[12]; // right shoulder
+      const lW = poseLandmarks[15];
+      const rW = poseLandmarks[16];
+      const lS = poseLandmarks[11];
+      const rS = poseLandmarks[12];
 
-      // ── Raised arm: wrist significantly above shoulder ──
-      if (lW && lS && (lW.visibility ?? 0) > 0.35 && lW.y < lS.y - 0.05) {
+      // Arm raised: wrist clearly above shoulder
+      if (lW && lS && (lW.visibility ?? 0) > 0.4 && lW.y < lS.y - ARM_RAISE_THRESH) {
         armRaised = true; signals.push('L_arm_up');
       }
-      if (rW && rS && (rW.visibility ?? 0) > 0.35 && rW.y < rS.y - 0.05) {
+      if (rW && rS && (rW.visibility ?? 0) > 0.4 && rW.y < rS.y - ARM_RAISE_THRESH) {
         armRaised = true; signals.push('R_arm_up');
       }
 
-      // ── Arm extended outward: wrist far from shoulder horizontally ──
-      if (lW && lS && (lW.visibility ?? 0) > 0.35) {
-        const hDist = Math.abs(lW.x - lS.x);
-        if (hDist > 0.18) { armExtended = true; signals.push('L_arm_ext'); }
+      // Arm extended: full punch-reach outward
+      if (lW && lS && (lW.visibility ?? 0) > 0.4 && Math.abs(lW.x - lS.x) > ARM_EXTEND_THRESH) {
+        armExtended = true; signals.push('L_arm_ext');
       }
-      if (rW && rS && (rW.visibility ?? 0) > 0.35) {
-        const hDist = Math.abs(rW.x - rS.x);
-        if (hDist > 0.18) { armExtended = true; signals.push('R_arm_ext'); }
+      if (rW && rS && (rW.visibility ?? 0) > 0.4 && Math.abs(rW.x - rS.x) > ARM_EXTEND_THRESH) {
+        armExtended = true; signals.push('R_arm_ext');
       }
 
-      // ── Wrist velocity: arm swinging (hitting motion) ──
+      // Wrist velocity: fast arm swing
       const curWrists = {};
-      if (lW && (lW.visibility ?? 0) > 0.35) { curWrists.lx = lW.x; curWrists.ly = lW.y; }
-      if (rW && (rW.visibility ?? 0) > 0.35) { curWrists.rx = rW.x; curWrists.ry = rW.y; }
+      if (lW && (lW.visibility ?? 0) > 0.4) { curWrists.lx = lW.x; curWrists.ly = lW.y; }
+      if (rW && (rW.visibility ?? 0) > 0.4) { curWrists.rx = rW.x; curWrists.ry = rW.y; }
 
       if (this.prevWrists) {
         if (curWrists.lx != null && this.prevWrists.lx != null) {
@@ -146,7 +127,7 @@ export class FightDetector {
       }
       this.prevWrists = curWrists;
 
-      // ── Body lunging: shoulder center moving fast (charging at someone) ──
+      // Body lunge: shoulder center charging forward
       if (lS && rS) {
         const cx = (lS.x + rS.x) / 2;
         const cy = (lS.y + rS.y) / 2;
@@ -162,32 +143,33 @@ export class FightDetector {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // DECISION: requires proximity/approach + aggressive action
+    // DECISION: ALL conditions must be met simultaneously
+    //   - faces close OR actively approaching
+    //   - AND at least one strong aggression signal
     // ═══════════════════════════════════════════════════════════════════════════
-    const hasAggression = armRaised || armExtended || armSwinging || bodyLunging;
     const hasProximity  = facesClose || approaching;
+    const hasAggression = armSwinging || bodyLunging || (armRaised && armExtended);
+    //                    ^^^ arm raised ALONE is not enough — must also be extended (punching)
 
-    // Fight = 2+ people (already checked) + proximity/approach + aggression
     const aggressive = hasProximity && hasAggression;
 
     if (aggressive) {
       this.counter++;
       if (this.counter >= FIGHT_CONFIRM_FRAMES) {
         this.lastTrigger = now;
-        this.counter     = 0;
-        console.warn('[Fight] DETECTED:', signals.join(', '));
+        this.counter = 0;
+        console.warn('[Fight] CONFIRMED after', FIGHT_CONFIRM_FRAMES, 'frames:', signals.join(', '));
       }
     } else {
-      // Decay counter slowly — don't reset instantly (brief occlusion shouldn't reset)
-      this.counter = Math.max(0, this.counter - 1);
+      // FULL RESET — any break in the aggressive chain resets the counter entirely
+      this.counter = 0;
     }
 
     const fighting = now - this.lastTrigger < DISPLAY_MS;
 
-    // Build debug reason
     const missing = [];
-    if (!hasProximity)  missing.push('people not close enough');
-    if (!hasAggression) missing.push('no aggressive action');
+    if (!hasProximity)  missing.push('not close enough');
+    if (!hasAggression) missing.push('no strong aggression');
 
     return {
       fight:   fighting,
@@ -195,13 +177,12 @@ export class FightDetector {
       reason:  fighting
         ? `FIGHT: ${signals.join(', ')}`
         : (aggressive
-            ? `confirming ${this.counter}/${FIGHT_CONFIRM_FRAMES}: ${signals.join(', ')}`
-            : `2+ people seen · ${missing.join(' · ')}`),
+            ? `confirming ${this.counter}/${FIGHT_CONFIRM_FRAMES}`
+            : `2+ people · ${missing.join(' · ')}`),
     };
   }
 
   reset() {
-    this.prevFaceCenters = null;
     this.prevMinDist     = null;
     this.prevBodyCenter  = null;
     this.prevWrists      = null;
