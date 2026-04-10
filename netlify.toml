@@ -1,0 +1,15 @@
+[build]
+  command   = "npm run build"
+  publish   = "dist"
+
+# Required headers for MediaPipe WASM (SharedArrayBuffer / SIMD)
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Cross-Origin-Opener-Policy   = "same-origin"
+    Cross-Origin-Embedder-Policy = "credentialless"
+
+[[redirects]]
+  from   = "/*"
+  to     = "/index.html"
+  status = 200
