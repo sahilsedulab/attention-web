@@ -208,9 +208,11 @@ export default function EnrollmentPanel() {
                 <div style={s.avatar}>{e.name[0]?.toUpperCase()}</div>
                 <div style={s.listInfo}>
                   <span style={s.listName}>{e.name}</span>
-                  <span style={s.listSub}>128-dim face embedding · stored in browser</span>
+                  <span style={s.listSub}>{e.descriptors?.length || 1} face angle(s) stored</span>
                 </div>
-                <button style={s.deleteBtn} onClick={() => handleDelete(e.name)}>🗑</button>
+                <button style={s.deleteBtn} onClick={() => handleDelete(e.name)} title="Remove enrollment">
+                  🗑 Remove
+                </button>
               </div>
             ))}
           </div>
@@ -248,5 +250,5 @@ const s = {
   listInfo:     { flex: 1, display: 'flex', flexDirection: 'column', gap: 2 },
   listName:     { fontWeight: 600, color: '#e0e0e0', fontSize: 14 },
   listSub:      { fontSize: 11, color: '#555' },
-  deleteBtn:    { background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 18, opacity: 0.6, padding: 4 },
+  deleteBtn:    { background: '#ef444422', border: '1px solid #ef444455', borderRadius: 8, cursor: 'pointer', fontSize: 13, padding: '6px 12px', color: '#ef4444', fontWeight: 600 },
 };
