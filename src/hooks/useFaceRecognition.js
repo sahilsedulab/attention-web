@@ -18,7 +18,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import * as faceapi from '@vladmandic/face-api';
 import { BACKEND_URL } from '../config';
 
-const MATCH_THRESHOLD = 0.5;
+const MATCH_THRESHOLD = 0.6; // 0.5 was too strict for webcam variations, 0.6 is standard
 const STORAGE_KEY     = 'attention_enrollments';
 const MODELS_URL      = '/models';   // local — run scripts/download-models.js first
 
@@ -51,10 +51,12 @@ export function useFaceRecognition() {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return;
       const parsed = JSON.parse(raw);
-      // Descriptors are stored as plain arrays, convert back to Float32Array
+      // Handle both old schema (single descriptor) and new schema (multiple array)
       const loaded = parsed.map(e => ({
-        name:       e.name,
-        descriptor: new Float32Array(e.descriptor),
+        name:        e.name,
+        descriptors: e.descriptors
+          ? e.descriptors.map(d => new Float32Array(d))
+          : [new Float32Array(e.descriptor)], // backwards compatibility
       }));
       setEnrollments(loaded);
       _rebuildMatcher(loaded);
@@ -75,8 +77,8 @@ export function useFaceRecognition() {
   const _saveToStorage = (list) => {
     try {
       const serializable = list.map(e => ({
-        name:       e.name,
-        descriptor: Array.from(e.descriptor),
+        name:        e.name,
+        descriptors: e.descriptors.map(d => Array.from(d)),
       }));
       localStorage.setItem(STORAGE_KEY, JSON.stringify(serializable));
     } catch (e) {
@@ -87,7 +89,7 @@ export function useFaceRecognition() {
   const _rebuildMatcher = (list) => {
     if (list.length === 0) { matcherRef.current = null; return; }
     const labeled = list.map(e =>
-      new faceapi.LabeledFaceDescriptors(e.name, [e.descriptor])
+      new faceapi.LabeledFaceDescriptors(e.name, e.descriptors)
     );
     matcherRef.current = new faceapi.FaceMatcher(labeled, MATCH_THRESHOLD);
   };
@@ -103,7 +105,7 @@ export function useFaceRecognition() {
     const opts = new faceapi.SsdMobilenetv1Options({ minConfidence: 0.3 });
 
     for (let i = 0; i < FRAMES; i++) {
-      onProgress?.(`Capturing frame ${i + 1}/${FRAMES}...`);
+      onProgress?.(`Capturing frame ${i + 1}/${FRAMES}... Turn head slowly!`);
       try {
         const detection = await faceapi
           .detectSingleFace(videoElement, opts)
@@ -118,13 +120,12 @@ export function useFaceRecognition() {
       throw new Error('No face detected. Ensure good lighting and face is visible.');
     }
 
-    const avg = new Float32Array(128);
-    for (const d of descriptors) for (let i = 0; i < 128; i++) avg[i] += d[i];
-    for (let i = 0; i < 128; i++) avg[i] /= descriptors.length;
-
+    // We no longer average descriptors! Averaging destroys side-profile data.
+    // By keeping all 15 distinct descriptors (front, left, right), the 
+    // FaceMatcher can match the person from ANY angle.
     const updated = [
       ...enrollments.filter(e => e.name !== name.trim()),
-      { name: name.trim(), descriptor: avg },
+      { name: name.trim(), descriptors },
     ];
     setEnrollments(updated);
     _saveToStorage(updated);
