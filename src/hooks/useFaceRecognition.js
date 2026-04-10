@@ -18,7 +18,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import * as faceapi from '@vladmandic/face-api';
 import { BACKEND_URL } from '../config';
 
-const MATCH_THRESHOLD = 0.90; // 0.70 is highly lenient to account for heavy 128D distortion on side profiles
+const MATCH_THRESHOLD = 0.80; // 0.70 is highly lenient to account for heavy 128D distortion on side profiles
 const STORAGE_KEY = 'attention_enrollments';
 const MODELS_URL = '/models';   // local — run scripts/download-models.js first
 
